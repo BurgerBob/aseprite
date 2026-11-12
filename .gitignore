@@ -18,3 +18,5 @@ build
 .build
 .deps
 CMakeSettings.json
+export-release.local.bat
+build_log*.txt
