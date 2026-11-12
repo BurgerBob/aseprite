@@ -124,6 +124,11 @@ private:
   bool m_layerAdded = false;
   int m_cachedType = 0;
   int m_cachedBrushGen = 0;
+  double m_cachedViewRotation = 0.0;
+
+  // Size of the content of the m_uiLayer (with a rotated editor view,
+  // the surface is bigger to contain the rotated content).
+  gfx::Size m_uiLayerContentSize;
 
   // Information about current brush
   doc::MaskBoundaries m_brushBoundaries;

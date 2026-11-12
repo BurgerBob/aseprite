@@ -151,7 +151,7 @@ bool StandbyState::onMouseDown(Editor* editor, MouseMessage* msg)
   }
 
   // Start scroll loop
-  if (editor->checkForScroll(msg) || editor->checkForZoom(msg))
+  if (editor->checkForRotateView(msg) || editor->checkForScroll(msg) || editor->checkForZoom(msg))
     return true;
 
   // Move cel X,Y coordinates
@@ -1013,9 +1013,12 @@ void StandbyState::Decorator::postRenderDecorator(EditorPostRender* render)
   if (StandbyState::Decorator::getSymmetryHandles(editor, handles)) {
     auto theme = skin::SkinTheme::get(editor);
     os::Surface* part = theme->parts.transformationHandle()->bitmap(0);
-    ui::Graphics g(editor->display());
+    // Draw in the editor graphics (handle bounds are in display
+    // coordinates) so the handles are rotated with the view.
+    ui::Graphics* g = render->getGraphics();
+    const gfx::Point origin = editor->bounds().origin();
     for (const auto& handle : handles)
-      g.drawRgbaSurface(part, handle.bounds.x, handle.bounds.y);
+      g->drawRgbaSurface(part, handle.bounds.x - origin.x, handle.bounds.y - origin.y);
   }
 }
 

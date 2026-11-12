@@ -45,6 +45,7 @@
 #include "app/ui/editor/moving_pixels_state.h"
 #include "app/ui/editor/pixels_movement.h"
 #include "app/ui/editor/play_state.h"
+#include "app/ui/editor/rotating_view_state.h"
 #include "app/ui/editor/scrolling_state.h"
 #include "app/ui/editor/standby_state.h"
 #include "app/ui/editor/zooming_state.h"
@@ -58,11 +59,13 @@
 #include "app/util/tile_flags_utils.h"
 #include "base/chrono.h"
 #include "base/convert_to.h"
+#include "base/pi.h"
 #include "base/scoped_value.h"
 #include "doc/doc.h"
 #include "doc/mask_boundaries.h"
 #include "doc/slice.h"
 #include "fmt/format.h"
+#include "gfx/matrix.h"
 #include "os/color_space.h"
 #include "os/sampling.h"
 #include "os/surface.h"
@@ -1082,6 +1085,13 @@ void Editor::drawSpriteUnclippedRect(ui::Graphics* g, const gfx::Rect& _rc)
 
 void Editor::drawSpriteClipped(const gfx::Region& updateRegion)
 {
+  // The update region is in virtual coordinates, it doesn't match
+  // the screen when the view is rotated, so we redraw the whole view.
+  if (isViewRotated()) {
+    drawRotatedViewOnScreen();
+    return;
+  }
+
   Region screenRegion;
   getDrawableRegion(screenRegion, kCutTopWindows);
 
@@ -1096,6 +1106,93 @@ void Editor::drawSpriteClipped(const gfx::Region& updateRegion)
       if (clip)
         drawSpriteUnclippedRect(editorGraphics.get(), updateRect);
     }
+  }
+}
+
+void Editor::drawEditorContent(ui::Graphics* g)
+{
+  drawBackground(g);
+  drawSpriteUnclippedRect(g, m_sprite->bounds());
+}
+
+void Editor::drawRotatedView(ui::Graphics* g)
+{
+  View* view = View::getView(this);
+  if (!view || !m_sprite)
+    return;
+
+  // The offscreen surface is a square (in display coordinates)
+  // centered in the rotation center, with the size of the viewport
+  // diagonal, so it covers the whole viewport for any angle.
+  const gfx::Rect vp = view->viewportBounds();
+  const gfx::PointF center = viewRotationCenter();
+  const int size = int(std::ceil(std::sqrt(double(vp.w) * vp.w + double(vp.h) * vp.h))) + 4;
+  const gfx::Rect virtualRc(int(std::floor(center.x)) - size / 2,
+                            int(std::floor(center.y)) - size / 2,
+                            size,
+                            size);
+
+  os::Surface* backSurface = display()->backLayer()->surface().get();
+  if (!m_rotatedViewSurface || m_rotatedViewSurface->width() < size ||
+      m_rotatedViewSurface->height() < size ||
+      m_rotatedViewSurface->colorSpace() != backSurface->colorSpace()) {
+    m_rotatedViewSurface = os::System::instance()->makeSurface(size,
+                                                               size,
+                                                               backSurface->colorSpace());
+  }
+
+  const gfx::Rect gVirtualRc = gfx::Rect(virtualRc).offset(-bounds().origin());
+  auto theme = SkinTheme::get(this);
+
+  // Draw the not rotated view in the offscreen surface (using the
+  // same coordinates of "g", i.e. relative to the editor bounds).
+  {
+    Graphics offscreen(nullptr,
+                       m_rotatedViewSurface,
+                       bounds().x - virtualRc.x,
+                       bounds().y - virtualRc.y);
+    offscreen.setFont(font());
+    offscreen.fillRect(theme->colors.editorFace(), gVirtualRc);
+    drawEditorContent(&offscreen);
+  }
+
+  // Blit the offscreen surface rotated around the center.
+  const gfx::PointF surfaceCenter(center.x - bounds().x + g->getInternalDeltaX(),
+                                  center.y - bounds().y + g->getInternalDeltaY());
+  gfx::Matrix matrix;
+  matrix.setRotate(float(m_viewRotation), float(surfaceCenter.x), float(surfaceCenter.y));
+
+  // Nearest neighbor for right angles (keeps pixels sharp), bilinear
+  // for any other angle.
+  const bool rightAngle = (std::fmod(std::fabs(m_viewRotation), 90.0) == 0.0);
+  const os::Sampling sampling(rightAngle ? os::Sampling::Filter::Nearest :
+                                           os::Sampling::Filter::Linear);
+
+  g->save();
+  g->concat(matrix);
+  g->drawSurface(m_rotatedViewSurface.get(),
+                 gfx::Rect(0, 0, size, size),
+                 gVirtualRc,
+                 sampling,
+                 nullptr);
+  g->restore();
+}
+
+void Editor::drawRotatedViewOnScreen()
+{
+  if (!m_sprite || !isVisible())
+    return;
+
+  Region screenRegion;
+  getDrawableRegion(screenRegion, kCutTopWindows);
+
+  // TODO render the offscreen surface just one time for all rectangles
+  Graphics backGraphics(display());
+  GraphicsPtr editorGraphics = getGraphics(clientBounds());
+  for (const Rect& screenRect : screenRegion) {
+    IntersectClip clip(&backGraphics, screenRect);
+    if (clip)
+      drawRotatedView(editorGraphics.get());
   }
 }
 
@@ -1140,7 +1237,11 @@ void Editor::drawMaskSafe()
     return;
 
   const bool haveSegs = m_document->hasMaskBoundaries();
-  if (haveSegs || hasSelectionToolMask()) {
+  if ((haveSegs || hasSelectionToolMask()) && isViewRotated()) {
+    HideBrushPreview hide(m_brushPreview);
+    drawRotatedViewOnScreen();
+  }
+  else if (haveSegs || hasSelectionToolMask()) {
     Region region;
     getDrawableRegion(region, kCutTopWindows);
     region.offset(-bounds().origin());
@@ -1578,7 +1679,9 @@ void Editor::flashCurrentLayer()
 gfx::Point Editor::autoScroll(const ui::MouseMessage* msg, const AutoScroll dir)
 {
   gfx::Point mousePos = msg->position();
-  if (!Preferences::instance().editor.autoScroll())
+  // TODO support auto-scroll with a rotated view (positions are
+  //      virtual, they cannot be compared with the viewport bounds)
+  if (!Preferences::instance().editor.autoScroll() || isViewRotated())
     return mousePos;
 
   // Hide the brush preview
@@ -1701,6 +1804,82 @@ Rect Editor::editorToScreen(const Rect& rc) const
 gfx::RectF Editor::editorToScreenF(const gfx::RectF& rc) const
 {
   return gfx::RectF(editorToScreenF(rc.origin()), editorToScreenF(rc.point2()));
+}
+
+void Editor::setViewRotation(double degrees)
+{
+  // Normalize to the (-180, 180] range
+  degrees = std::fmod(degrees, 360.0);
+  if (degrees > 180.0)
+    degrees -= 360.0;
+  else if (degrees <= -180.0)
+    degrees += 360.0;
+  if (std::fabs(degrees) < 0.01)
+    degrees = 0.0;
+
+  if (m_viewRotation == degrees)
+    return;
+
+  const bool brushPreviewOnScreen = m_brushPreview.onScreen();
+  if (brushPreviewOnScreen)
+    m_brushPreview.hide();
+
+  m_viewRotation = degrees;
+  if (!isViewRotated())
+    m_rotatedViewSurface.reset();
+
+  invalidate();
+
+  if (brushPreviewOnScreen && hasMouse())
+    showBrushPreview(mousePosInDisplay());
+  if (hasMouse())
+    updateStatusBar();
+}
+
+gfx::PointF Editor::viewRotationCenter() const
+{
+  View* view = View::getView(this);
+  const gfx::Rect vp = (view ? view->viewportBounds() : bounds());
+  return gfx::PointF(vp.x + vp.w / 2.0, vp.y + vp.h / 2.0);
+}
+
+// Applies the given rotation (in degrees) to "pt" around "center"
+static gfx::PointF rotate_point(const gfx::PointF& pt, const gfx::PointF& center, double degrees)
+{
+  const double a = degrees * PI / 180.0;
+  const double c = std::cos(a);
+  const double s = std::sin(a);
+  const double dx = pt.x - center.x;
+  const double dy = pt.y - center.y;
+  return gfx::PointF(center.x + dx * c - dy * s, center.y + dx * s + dy * c);
+}
+
+gfx::PointF Editor::displayToVirtualF(const gfx::PointF& pt) const
+{
+  if (!isViewRotated())
+    return pt;
+  return rotate_point(pt, viewRotationCenter(), -m_viewRotation);
+}
+
+gfx::Point Editor::displayToVirtual(const gfx::Point& pt) const
+{
+  if (!isViewRotated())
+    return pt;
+  const gfx::PointF res = displayToVirtualF(gfx::PointF(pt));
+  return gfx::Point(int(std::floor(res.x)), int(std::floor(res.y)));
+}
+
+gfx::Point Editor::virtualToDisplay(const gfx::Point& pt) const
+{
+  if (!isViewRotated())
+    return pt;
+  const gfx::PointF res = rotate_point(gfx::PointF(pt), viewRotationCenter(), m_viewRotation);
+  return gfx::Point(int(std::round(res.x)), int(std::round(res.y)));
+}
+
+gfx::Point Editor::mousePosInDisplay() const
+{
+  return displayToVirtual(ui::Widget::mousePosInDisplay());
 }
 
 void Editor::add_observer(EditorObserver* observer)
@@ -2115,6 +2294,35 @@ bool Editor::onProcessMessage(Message* msg)
   if (!m_deletedStates.empty())
     m_deletedStates.clear();
 
+  // With a rotated view, the editor (states, tools, decorators) works
+  // with virtual (not rotated) display coordinates, so we convert the
+  // mouse position of the message (and restore it at the end because
+  // the same message can be processed by other widgets).
+  struct VirtualMousePos {
+    MouseMessage* msg = nullptr;
+    gfx::Point realPos;
+    ~VirtualMousePos()
+    {
+      if (msg)
+        msg->setPosition(realPos);
+    }
+  } virtualMousePos;
+  switch (msg->type()) {
+    case kMouseDownMessage:
+    case kMouseUpMessage:
+    case kDoubleClickMessage:
+    case kMouseMoveMessage:
+    case kSetCursorMessage:
+    case kMouseWheelMessage:
+      if (isViewRotated()) {
+        auto mouseMsg = static_cast<MouseMessage*>(msg);
+        virtualMousePos.msg = mouseMsg;
+        virtualMousePos.realPos = mouseMsg->position();
+        mouseMsg->setPosition(displayToVirtual(mouseMsg->position()));
+      }
+      break;
+  }
+
   switch (msg->type()) {
     case kTimerMessage:
       if (static_cast<TimerMessage*>(msg)->timer() == &m_antsTimer) {
@@ -2464,8 +2672,10 @@ void Editor::onPaint(ui::PaintEvent& ev)
 
       // Draw the sprite in the editor
       renderChrono.reset();
-      drawBackground(g);
-      drawSpriteUnclippedRect(g, m_sprite->bounds());
+      if (isViewRotated())
+        drawRotatedView(g);
+      else
+        drawEditorContent(g);
       renderElapsed = renderChrono.elapsed();
 
 #if ENABLE_DEVMODE
@@ -2489,7 +2699,9 @@ void Editor::onPaint(ui::PaintEvent& ev)
 
       // Draw the mask boundaries
       if (m_document->hasMaskBoundaries()) {
-        drawMask(g);
+        // With a rotated view the mask was already drawn in drawRotatedView()
+        if (!isViewRotated())
+          drawMask(g);
         m_antsTimer.start();
       }
       else {
@@ -2508,6 +2720,16 @@ void Editor::onPaint(ui::PaintEvent& ev)
 
 void Editor::onInvalidateRegion(const gfx::Region& region)
 {
+  // The region is in virtual coordinates, it doesn't match the screen
+  // when the view is rotated, so we invalidate the whole viewport.
+  if (isViewRotated() && !region.isEmpty()) {
+    View* view = View::getView(this);
+    const gfx::Region viewRegion(view ? view->viewportBounds() : bounds());
+    Widget::onInvalidateRegion(viewRegion);
+    m_brushPreview.invalidateRegion(viewRegion);
+    return;
+  }
+
   Widget::onInvalidateRegion(region);
   m_brushPreview.invalidateRegion(region);
 }
@@ -3084,6 +3306,25 @@ bool Editor::checkForZoom(ui::MouseMessage* msg)
 void Editor::startScrollingState(ui::MouseMessage* msg)
 {
   EditorStatePtr newState(new ScrollingState);
+  setState(newState);
+  newState->onMouseDown(this, msg);
+}
+
+bool Editor::checkForRotateView(ui::MouseMessage* msg)
+{
+  // Ctrl+Shift+Space + drag rotates the view (like Photoshop)
+  if (msg->left() && msg->ctrlPressed() && msg->shiftPressed() &&
+      ((msg->modifiers() & kKeySpaceModifier) == kKeySpaceModifier ||
+       os::System::instance()->isKeyPressed(kKeySpace))) {
+    startRotatingViewState(msg);
+    return true;
+  }
+  return false;
+}
+
+void Editor::startRotatingViewState(ui::MouseMessage* msg)
+{
+  EditorStatePtr newState(new RotatingViewState);
   setState(newState);
   newState->onMouseDown(this, msg);
 }

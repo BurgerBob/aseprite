@@ -31,6 +31,7 @@
 #include "gfx/fwd.h"
 #include "obs/connection.h"
 #include "os/color_space.h"
+#include "os/surface.h"
 #include "render/projection.h"
 #include "render/zoom.h"
 #include "ui/base.h"
@@ -183,6 +184,26 @@ public:
   gfx::Rect editorToScreen(const gfx::Rect& rc) const;
   gfx::RectF editorToScreenF(const gfx::RectF& rc) const;
 
+  // View rotation (in degrees, clockwise) around the center of the
+  // viewport. The whole editor works in "virtual" display
+  // coordinates (the not rotated view), the rotation is applied only
+  // when the editor is painted on the screen, and the inverse
+  // rotation is applied to mouse positions when they enter the
+  // editor.
+  double viewRotation() const { return m_viewRotation; }
+  bool isViewRotated() const { return m_viewRotation != 0.0; }
+  void setViewRotation(double degrees);
+  gfx::PointF viewRotationCenter() const;
+  gfx::PointF displayToVirtualF(const gfx::PointF& pt) const;
+  gfx::Point displayToVirtual(const gfx::Point& pt) const;
+  gfx::Point virtualToDisplay(const gfx::Point& pt) const;
+
+  // Mouse position in virtual display coordinates (hides
+  // Widget::mousePosInDisplay() so all editor code receives
+  // coordinates of the not rotated view).
+  gfx::Point mousePosInDisplay() const;
+  gfx::Point realMousePosInDisplay() const { return ui::Widget::mousePosInDisplay(); }
+
   void add_observer(EditorObserver* observer);
   void remove_observer(EditorObserver* observer);
 
@@ -261,10 +282,12 @@ public:
   // user wants to scroll". Same for zoom.
   bool checkForScroll(ui::MouseMessage* msg);
   bool checkForZoom(ui::MouseMessage* msg);
+  bool checkForRotateView(ui::MouseMessage* msg);
 
   // Start Scrolling/ZoomingState
   void startScrollingState(ui::MouseMessage* msg);
   void startZoomingState(ui::MouseMessage* msg);
+  void startRotatingViewState(ui::MouseMessage* msg);
 
   // Animation control
   void play(const bool playOnce, const bool playAll, const bool playSubtags);
@@ -411,6 +434,18 @@ private:
   // routine.
   void drawOneSpriteUnclippedRect(ui::Graphics* g, const gfx::Rect& rc, int dx, int dy);
 
+  // Draws the whole sprite and its decorations (background, mask,
+  // etc.) in "g" using virtual coordinates.
+  void drawEditorContent(ui::Graphics* g);
+
+  // Draws the editor content in an offscreen surface and blits it
+  // rotated in "g" (used when isViewRotated() is true).
+  void drawRotatedView(ui::Graphics* g);
+
+  // Draws the rotated view directly on the screen (used instead of
+  // the partial updates of drawSpriteClipped()/drawMaskSafe()).
+  void drawRotatedViewOnScreen();
+
   gfx::Point calcExtraPadding(const render::Projection& proj);
 
   void invalidateCanvas();
@@ -488,6 +523,12 @@ private:
 
   bool m_secondaryButton;
   Flashing m_flashing;
+
+  // View rotation in degrees (see viewRotation()).
+  double m_viewRotation = 0.0;
+
+  // Offscreen surface used to draw the not rotated view.
+  os::SurfaceRef m_rotatedViewSurface;
 
   // Animation speed multiplier.
   double m_aniSpeed;

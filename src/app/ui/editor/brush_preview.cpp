@@ -39,6 +39,7 @@
 #include "doc/image.h"
 #include "doc/layer.h"
 #include "doc/primitives.h"
+#include "gfx/matrix.h"
 #include "os/surface.h"
 #include "os/system.h"
 #include "os/window.h"
@@ -49,6 +50,7 @@
 #include "ui/system.h"
 
 #include <array>
+#include <cmath>
 
 namespace app {
 
@@ -445,7 +447,7 @@ void BrushPreview::show(const gfx::Point& screenPos)
       const render::Projection& proj = m_editor->projection();
 
       if (m_uiLayer->surface()) {
-        gfx::Rect layerBounds = m_uiLayer->surface()->bounds();
+        gfx::Rect layerBounds(gfx::Point(0, 0), m_uiLayerContentSize);
 
         if (m_type & SELECTION_CROSSHAIR) {
           layerBounds.setOrigin(m_editor->editorToScreen(spritePos) -
@@ -464,6 +466,17 @@ void BrushPreview::show(const gfx::Point& screenPos)
           }
         }
 
+        // With a rotated view, layerBounds is in virtual coordinates:
+        // we center the (bigger) surface in the real position of the
+        // content center.
+        if (m_editor->isViewRotated()) {
+          const gfx::Size surfaceSize = m_uiLayer->surface()->bounds().size();
+          const gfx::Point realCenter = m_editor->virtualToDisplay(
+            layerBounds.origin() + gfx::Point(layerBounds.w / 2, layerBounds.h / 2));
+          layerBounds = gfx::Rect(realCenter - gfx::Point(surfaceSize.w / 2, surfaceSize.h / 2),
+                                  surfaceSize);
+        }
+
         m_uiLayer->setPosition(layerBounds.origin());
         m_uiLayer->setClipRegion(m_clippingRegion);
       }
@@ -472,7 +485,8 @@ void BrushPreview::show(const gfx::Point& screenPos)
       m_layerAdded = true;
 
       // Check if the cached brush painted in the m_uiLayer is still valid
-      if (m_cachedType != m_type || m_cachedBrushGen != m_brushGen) {
+      if (m_cachedType != m_type || m_cachedBrushGen != m_brushGen ||
+          m_cachedViewRotation != m_editor->viewRotation()) {
         cached = false;
       }
 
@@ -480,8 +494,20 @@ void BrushPreview::show(const gfx::Point& screenPos)
       if (!cached && m_uiLayer->surface()) {
         m_uiLayer->surface()->clear();
 
-        gfx::Rect layerBounds = m_uiLayer->surface()->bounds();
+        gfx::Rect layerBounds(gfx::Point(0, 0), m_uiLayerContentSize);
         ui::Graphics g(m_uiLayer->surface());
+
+        // Draw the content centered in the surface and rotated as the view
+        if (m_editor->isViewRotated()) {
+          const gfx::Size surfaceSize = m_uiLayer->surface()->bounds().size();
+          gfx::Matrix matrix;
+          matrix.setRotate(float(m_editor->viewRotation()),
+                           surfaceSize.w / 2.0f,
+                           surfaceSize.h / 2.0f);
+          matrix.preTranslate((surfaceSize.w - layerBounds.w) / 2,
+                              (surfaceSize.h - layerBounds.h) / 2);
+          g.concat(matrix);
+        }
 
         os::Paint paint;
         paint.style(os::Paint::Stroke);
@@ -520,6 +546,7 @@ void BrushPreview::show(const gfx::Point& screenPos)
 
         m_cachedType = m_type;
         m_cachedBrushGen = m_brushGen;
+        m_cachedViewRotation = m_editor->viewRotation();
       }
     }
   }
@@ -625,6 +652,15 @@ bool BrushPreview::createUILayer(const gfx::Rect& brushBounds)
   if (sizeHint.w == 0 || sizeHint.h == 0)
     return false;
 
+  m_uiLayerContentSize = sizeHint;
+
+  // With a rotated view we need a square surface to contain the
+  // rotated content (the diagonal of the content).
+  if (m_editor->isViewRotated()) {
+    const int side = int(std::ceil(std::hypot(double(sizeHint.w), double(sizeHint.h)))) + 2;
+    sizeHint = gfx::Size(side, side);
+  }
+
   os::SurfaceRef surface = m_uiLayer->surface();
   if (!surface || surface->width() != sizeHint.w || surface->height() != sizeHint.h) {
     surface = os::System::instance()->makeRgbaSurface(sizeHint.w, sizeHint.h);
@@ -724,6 +760,8 @@ void BrushPreview::createCrosshairCursor(ui::Graphics* g, const gfx::Color curso
 
   // Cursor with black/white colors (we create a key/index for
   // g_cachedCursors depending on the colors on the screen)
+  // Real (rotated) position of the mouse to read screen pixels
+  const gfx::Point realScreenPos = m_editor->virtualToDisplay(m_screenPosition);
   if (m_blackAndWhiteNegative) {
     int k = 0;
     if (m_type & CROSSHAIR) {
@@ -731,8 +769,8 @@ void BrushPreview::createCrosshairCursor(ui::Graphics* g, const gfx::Color curso
       for (int v = 0; v < 7; v++) {
         for (int u = 0; u < 7; u++) {
           if (g_crosshair_pattern[v * 7 + u]) {
-            color_t c = g->getPixel(m_screenPosition.x + uiScale * (u - 3),
-                                    m_screenPosition.y + uiScale * (v - 3));
+            color_t c = g->getPixel(realScreenPos.x + uiScale * (u - 3),
+                                    realScreenPos.y + uiScale * (v - 3));
             c = color_utils::blackandwhite_neg(c);
             if (rgba_getr(c) == 255) { // White
               k |= (1 << bit);
@@ -743,7 +781,7 @@ void BrushPreview::createCrosshairCursor(ui::Graphics* g, const gfx::Color curso
       }
     }
     if (requireLittleCenterDot) {
-      color_t c = g->getPixel(m_screenPosition.x, m_screenPosition.y);
+      color_t c = g->getPixel(realScreenPos.x, realScreenPos.y);
       c = color_utils::blackandwhite_neg(c);
       if (rgba_getr(c) == 255) { // White
         k |= (m_type & CROSSHAIR ? 0x200 : 0x301);

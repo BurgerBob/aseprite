@@ -309,6 +309,17 @@
         <param name="action" value="in" />
       </key>
 
+      <!-- View rotation -->
+      <key command="RotateView" shortcut="Ctrl+Shift+Space+Right" mac="Cmd+Shift+Space+Right">
+        <param name="angle" value="15" />
+      </key>
+      <key command="RotateView" shortcut="Ctrl+Shift+Space+Left" mac="Cmd+Shift+Space+Left">
+        <param name="angle" value="-15" />
+      </key>
+      <key command="RotateView" shortcut="Ctrl+Shift+Space+Down" mac="Cmd+Shift+Space+Down">
+        <param name="reset" value="true" />
+      </key>
+
       <!-- Layer opacity -->
       <key command="LayerOpacity"><param name="opacity" value="0" /></key>
       <key command="LayerOpacity"><param name="opacity" value="32" /></key>
@@ -1047,6 +1058,17 @@
           </item>
           <item command="TiledMode" text="@.view_tiled_mode_y">
             <param name="axis" value="y" />
+          </item>
+        </menu>
+        <menu text="@.view_rotate_view">
+          <item command="RotateView" text="@.view_rotate_view_cw">
+            <param name="angle" value="15" />
+          </item>
+          <item command="RotateView" text="@.view_rotate_view_ccw">
+            <param name="angle" value="-15" />
+          </item>
+          <item command="RotateView" text="@.view_rotate_view_reset">
+            <param name="reset" value="true" />
           </item>
         </menu>
         <item command="SymmetryMode" text="@.view_symmetry_options" group="view_canvas_helpers" />

@@ -223,6 +223,10 @@ public:
 
   const gfx::Point& position() const { return m_pos; }
 
+  // Used by app::Editor to convert the position to its virtual
+  // (not rotated) display coordinates.
+  void setPosition(const gfx::Point& pos) { m_pos = pos; }
+
   // Returns the mouse message position relative to the given
   // "anotherDisplay" (the m_pos field is relative to m_display).
   gfx::Point positionForDisplay(Display* anotherDisplay) const;

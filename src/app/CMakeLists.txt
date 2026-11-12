@@ -468,6 +468,7 @@ target_sources(app-lib PRIVATE
   commands/cmd_reselect_mask.cpp
   commands/cmd_reverse_frames.cpp
   commands/cmd_rotate.cpp
+  commands/cmd_rotate_view.cpp
   commands/cmd_run_command.cpp
   commands/cmd_save_file.cpp
   commands/cmd_save_mask.cpp
@@ -642,6 +643,7 @@ target_sources(app-lib PRIVATE
   ui/editor/pivot_helpers.cpp
   ui/editor/pixels_movement.cpp
   ui/editor/play_state.cpp
+  ui/editor/rotating_view_state.cpp
   ui/editor/scrolling_state.cpp
   ui/editor/select_box_state.cpp
   ui/editor/select_text_box_state.cpp
